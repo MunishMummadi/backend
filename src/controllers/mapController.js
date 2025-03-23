@@ -1,9 +1,11 @@
 import dotenv from 'dotenv';
 import { 
   searchHealthcareProviders, 
-  formatProviderFromMapbox, 
-  generateStaticMapUrl 
-} from '../utils/mapboxUtils.js';
+  formatProviderFromGoogleMaps, 
+  generateStaticMapUrl,
+  getPlaceDetails,
+  geocodePincode
+} from '../utils/googleMapsUtils.js';
 import { validateApiKeys, logRequestInfo } from '../utils/diagnostics.js';
 import providerService from '../services/providerService.js';
 
@@ -25,7 +27,7 @@ class MapController {
           lng: -122.4194
         },
         apiStatus: 'ok',
-        mapProvider: 'mapbox',
+        mapProvider: 'google',
         timestamp: new Date().toISOString()
       });
     } catch (error) {
@@ -40,21 +42,52 @@ class MapController {
       // Log request info for debugging
       console.log('Provider search request:', logRequestInfo(req));
       
-      const { query, lat, lng, type, specialty, priceRange, radius = 5000, insurance } = req.query;
+      const { query, lat, lng, pincode, type, specialty, priceRange, radius = 5000, insurance, country = 'IN' } = req.query;
       
       // Check if we have enough parameters to perform search
-      if (!query && !lat && !lng) {
+      if (!query && !lat && !lng && !pincode) {
         return res.status(400).json({ 
-          error: 'Search query or location (lat/lng) is required',
+          error: 'Search query, location (lat/lng), or pincode is required',
           providers: [],
           mapUrl: null
         });
       }
       
-      // Parse coordinates if provided
-      let latitude = lat ? parseFloat(lat) : 37.7749;
-      let longitude = lng ? parseFloat(lng) : -122.4194;
-      let isUserLocation = Boolean(lat && lng);
+      // Default coordinates (will be overridden if lat/lng or pincode is provided)
+      let latitude = 37.7749;
+      let longitude = -122.4194;
+      let isUserLocation = false;
+      let formattedAddress = null;
+      
+      // Handle pincode search if provided
+      if (pincode) {
+        try {
+          console.log(`Geocoding pincode: ${pincode}`);
+          const geocodeResult = await geocodePincode(pincode, country);
+          latitude = geocodeResult.lat;
+          longitude = geocodeResult.lng;
+          formattedAddress = geocodeResult.formattedAddress;
+          isUserLocation = true;
+          
+          console.log(`Pincode ${pincode} geocoded to:`, {
+            lat: latitude,
+            lng: longitude,
+            address: formattedAddress
+          });
+        } catch (geocodeError) {
+          console.error('Error geocoding pincode:', geocodeError);
+          return res.status(400).json({
+            error: `Invalid pincode: ${geocodeError.message}`,
+            providers: [],
+            mapUrl: null
+          });
+        }
+      } else if (lat && lng) {
+        // Parse coordinates if lat/lng are provided directly
+        latitude = parseFloat(lat);
+        longitude = parseFloat(lng);
+        isUserLocation = true;
+      }
       
       console.log('Searching providers with params:', { 
         query, 
@@ -67,8 +100,8 @@ class MapController {
       
       let providers = [];
       
-      if (query && !lat && !lng) {
-        // Text-based search using Mapbox
+      if (query && !lat && !lng && !pincode) {
+        // Text-based search using Google Maps
         try {
           providers = await searchHealthcareProviders(query, {
             type,
@@ -83,7 +116,7 @@ class MapController {
             longitude = providers[0].lng;
           }
         } catch (apiError) {
-          console.error('Mapbox search API error:', apiError);
+          console.error('Google Maps search API error:', apiError);
           return res.status(500).json({ 
             error: 'Failed to search providers', 
             details: apiError.message,
@@ -92,7 +125,7 @@ class MapController {
           });
         }
       } else {
-        // Location-based search
+        // Location-based search (using coordinates from pincode or direct lat/lng)
         try {
           // First try our database
           const dbProviders = await providerService.findNearbyProviders({
@@ -109,14 +142,17 @@ class MapController {
             providers = dbProviders;
             console.log(`Found ${providers.length} providers in database`);
           } else {
-            // If no results in database, use Mapbox
-            providers = await searchHealthcareProviders('healthcare', {
+            // If no results in database, use Google Maps
+            // For pincode or location-based searches, we focus on medical facilities
+            const searchKeyword = type || specialty || 'medical healthcare';
+            providers = await searchHealthcareProviders(searchKeyword, {
               lat: latitude,
               lng: longitude,
-              type,
+              radius: parseInt(radius),
+              type: type || 'hospital', // Default to hospital if no type specified
               specialty
             });
-            console.log(`Found ${providers.length} providers via Mapbox location search`);
+            console.log(`Found ${providers.length} providers via Google Maps location search`);
           }
         } catch (serviceError) {
           console.error('Provider service error:', serviceError);
@@ -146,7 +182,8 @@ class MapController {
       res.json({
         providers,
         mapUrl,
-        center: { lat: latitude, lng: longitude }
+        center: { lat: latitude, lng: longitude },
+        formattedAddress // Include the formatted address if we have it from pincode
       });
       
     } catch (error) {
@@ -159,7 +196,7 @@ class MapController {
     }
   }
 
-  // Get provider details - no change needed as we'll use our DB for this
+  // Get provider details
   async getProviderDetails(req, res) {
     try {
       const { placeId } = req.params;
@@ -174,8 +211,20 @@ class MapController {
       if (provider) {
         res.json({ provider });
       } else {
-        // If not found in database, handle appropriately
-        res.status(404).json({ error: 'Provider not found' });
+        // If not found in database, fetch from Google Maps
+        try {
+          const placeDetails = await getPlaceDetails(placeId);
+          if (placeDetails) {
+            // Save to database for future requests
+            await providerService.saveProviderDetails(placeDetails);
+            res.json({ provider: placeDetails });
+          } else {
+            res.status(404).json({ error: 'Provider not found' });
+          }
+        } catch (error) {
+          console.error('Error fetching place details:', error);
+          res.status(500).json({ error: 'Failed to get provider details' });
+        }
       }
     } catch (error) {
       console.error('Error getting provider details:', error);
@@ -188,7 +237,7 @@ class MapController {
     try {
       res.json({ 
         message: 'API is up and running', 
-        mapProvider: 'mapbox',
+        mapProvider: 'google',
         timestamp: new Date().toISOString() 
       });
     } catch (error) {

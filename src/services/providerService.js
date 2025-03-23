@@ -5,6 +5,17 @@ import { Op } from 'sequelize';
 // Initialize Google Maps client
 const googleMapsClient = new Client({});
 
+// Define medical-related place types for consistent filtering
+const MEDICAL_PLACE_TYPES = [
+  'hospital', 
+  'doctor', 
+  'health', 
+  'dentist', 
+  'pharmacy', 
+  'physiotherapist', 
+  'medical_office'
+];
+
 class ProviderService {
   // Find providers near a location with filtering
   async findNearbyProviders(params) {
@@ -28,14 +39,34 @@ class ProviderService {
       }
       
       // Otherwise, fetch from Google Maps API
+      // Build the base search parameters
+      const searchParams = {
+        location: { lat: parseFloat(lat), lng: parseFloat(lng) },
+        radius: parseInt(radius),
+        key: process.env.GOOGLE_MAPS_API_KEY
+      };
+      
+      // Add type filter if provided and it's a valid medical type
+      if (type && MEDICAL_PLACE_TYPES.includes(type.toLowerCase())) {
+        searchParams.type = type.toLowerCase();
+      } else {
+        // Default to healthcare-related places
+        searchParams.type = 'hospital';
+      }
+      
+      // Build keyword to ensure we get medical results
+      let keyword = 'healthcare';
+      if (specialty) {
+        keyword += ` ${specialty}`;
+      }
+      if (type && !MEDICAL_PLACE_TYPES.includes(type.toLowerCase())) {
+        // If type is not a standard Google Maps type, include it as keyword
+        keyword += ` ${type}`;
+      }
+      searchParams.keyword = keyword;
+      
       const response = await googleMapsClient.placesNearby({
-        params: {
-          location: { lat: parseFloat(lat), lng: parseFloat(lng) },
-          radius: parseInt(radius),
-          type: 'hospital', // Default to hospital type
-          keyword: type || specialty || 'healthcare provider hospital clinic medical',
-          key: process.env.GOOGLE_MAPS_API_KEY
-        }
+        params: searchParams
       });
 
       let providers = response.data.results;
@@ -43,7 +74,7 @@ class ProviderService {
       // Apply filters
       if (specialty) {
         providers = providers.filter(p => 
-          p.types.some(t => t.includes(specialty.toLowerCase())));
+          p.types.some(t => t.toLowerCase().includes(specialty.toLowerCase())));
       }
 
       if (priceRange) {
@@ -133,7 +164,7 @@ class ProviderService {
 
   /**
    * Save provider details to the database
-   * @param {Object} providerData - Provider details from Mapbox
+   * @param {Object} providerData - Provider details from Google Maps
    * @returns {Promise<Object>} - Saved provider
    */
   async saveProviderDetails(providerData) {
