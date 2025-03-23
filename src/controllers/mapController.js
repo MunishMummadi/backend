@@ -4,7 +4,6 @@ import {
   formatProviderFromGoogleMaps, 
   generateStaticMapUrl,
   getPlaceDetails,
-  geocodePincode,
   getRouteDirections
 } from '../utils/googleMapsUtils.js';
 import { validateApiKeys, logRequestInfo } from '../utils/diagnostics.js';
@@ -15,6 +14,11 @@ import {
   createGoogleMapsBounds, 
   toGoogleMapsLatLng 
 } from '../utils/coordinateUtils.js';
+import { 
+  geocodePostalCode, 
+  getFallbackCoordinates, 
+  isValidPostalCode 
+} from '../utils/postalCodeUtils.js';
 import providerService from '../services/providerService.js';
 
 // Load environment variables
@@ -64,7 +68,7 @@ class MapController {
         radius = 5000, 
         insurance, 
         minRating = 0,
-        country = 'IN' 
+        country = null  // Default to null for global postal code lookup
       } = req.query;
       
       // Process insurance parameters (can be a single string or an array)
@@ -98,8 +102,16 @@ class MapController {
       // Handle pincode search if provided
       if (pincode) {
         try {
-          console.log(`Geocoding pincode: ${pincode}`);
-          const geocodeResult = await geocodePincode(pincode, country);
+          console.log(`Processing postal code search: ${pincode}${country ? ` for country: ${country}` : ''}`);
+          
+          // Validate postal code format if country is provided
+          if (country && !isValidPostalCode(pincode, country)) {
+            console.warn(`Potentially invalid postal code format: ${pincode} for country: ${country}`);
+            // Continue anyway - our geocoder will try multiple services
+          }
+          
+          // Use our robust multi-service geocoder
+          const geocodeResult = await geocodePostalCode(pincode, country);
           
           // Validate geocode results
           if (isValidCoordinates(geocodeResult)) {
@@ -108,20 +120,61 @@ class MapController {
             formattedAddress = geocodeResult.formattedAddress;
             isUserLocation = true;
             
-            console.log(`Pincode ${pincode} geocoded to:`, {
+            console.log(`Postal code ${pincode} geocoded to:`, {
               lat: latitude,
               lng: longitude,
-              address: formattedAddress
+              address: formattedAddress,
+              method: geocodeResult.source
             });
           } else {
             throw new Error('Invalid coordinates returned from geocoding');
           }
         } catch (geocodeError) {
-          console.error('Error geocoding pincode:', geocodeError);
+          console.error('Error geocoding postal code:', geocodeError);
+          
+          // Use fallback coordinates for the country if available
+          if (country) {
+            console.log(`Using fallback coordinates for country: ${country}`);
+            const fallback = getFallbackCoordinates(country);
+            latitude = fallback.lat;
+            longitude = fallback.lng;
+            formattedAddress = `${country} (approximate)`;
+            
+            // Return a warning but continue with search
+            return res.status(200).json({
+              warning: `Precise location for postal code "${pincode}" not found. Using approximate country location instead.`,
+              userLocation: {
+                lat: latitude,
+                lng: longitude,
+                address: formattedAddress,
+                isApproximate: true
+              },
+              // Continue with the search using these coordinates
+              providers: await providerService.findNearbyProviders({
+                lat: latitude,
+                lng: longitude,
+                type,
+                specialty,
+                priceRange,
+                radius: parseInt(radius),
+                insurance: insuranceParams,
+                minRating: parseFloat(minRating)
+              }),
+              mapUrl: generateStaticMapUrl({ lat: latitude, lng: longitude })
+            });
+          }
+          
+          // If we don't have a country fallback, return an error
           return res.status(400).json({
-            error: `Invalid pincode: ${geocodeError.message}`,
+            error: `Unable to find location for postal code "${pincode}": ${geocodeError.message}`,
             providers: [],
-            mapUrl: null
+            mapUrl: null,
+            suggestions: [
+              "Try entering the postal code without spaces or dashes",
+              "Try specifying a country code (e.g., US, IN, GB)",
+              "Try using a city name instead of a postal code",
+              "Make sure you've entered the correct postal code"
+            ]
           });
         }
       } else if (lat && lng) {

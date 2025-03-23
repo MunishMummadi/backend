@@ -23,43 +23,225 @@ const MEDICAL_PLACE_TYPES = [
 ];
 
 /**
- * Geocode a pincode to get latitude and longitude
+ * Geocode a pincode/postal code to get latitude and longitude
+ * Works globally with optimizations for South Asia, Latin America, Africa, United States, and India
+ * 
  * @param {string} pincode - Postal code/ZIP code to geocode
- * @param {string} country - Optional country code (e.g., 'IN' for India)
+ * @param {string} country - Optional country code (default: null for global search)
  * @returns {Promise<Object>} - Geocoded coordinates {lat, lng}
  */
-export const geocodePincode = async (pincode, country = 'IN') => {
+export const geocodePincode = async (pincode, country = null) => {
   try {
-    // Validate pincode
-    if (!pincode || pincode.length < 4) {
-      throw new Error('Invalid pincode format');
+    // Basic validation
+    if (!pincode || typeof pincode !== 'string') {
+      throw new Error('Postal code must be provided as a string');
     }
 
-    // Use Google Geocoding API to get coordinates
-    const response = await googleMapsClient.geocode({
-      params: {
-        address: pincode,
-        components: {
-          postal_code: pincode,
-          country: country
+    // Clean up input - remove spaces, dashes, etc.
+    const cleanPincode = pincode.replace(/[\s\-\.]+/g, '');
+    console.log(`Processing postal code: ${cleanPincode}${country ? ` for country: ${country}` : ''}`);
+
+    // Try multiple geocoding strategies in sequence until one works
+    // This creates a robust system for handling different postal code formats worldwide
+    
+    // Store our attempts for debugging
+    const attemptResults = [];
+    let result = null;
+
+    // 1. Try region-specific formats first if country is provided
+    if (country) {
+      // Define region-specific formats 
+      const regionFormats = {
+        // United States - 5 or 9 digit ZIP codes (with or without dash)
+        'US': async () => {
+          // For US ZIP codes, ensure we have at least 5 digits
+          if (/^\d+$/.test(cleanPincode)) {
+            // Pad with zeros if needed for US postal codes
+            const paddedPincode = cleanPincode.padStart(5, '0').substring(0, 5);
+            console.log(`Trying US ZIP code format: ${paddedPincode}`);
+            
+            const response = await googleMapsClient.geocode({
+              params: {
+                address: `${paddedPincode} USA`,
+                components: 'country:US',
+                key: process.env.GOOGLE_MAPS_API_KEY
+              }
+            });
+            
+            return response.data.results && response.data.results.length > 0 ? response : null;
+          }
+          return null;
         },
-        key: process.env.GOOGLE_MAPS_API_KEY
-      }
-    });
-
-    if (response.data.results && response.data.results.length > 0) {
-      const location = response.data.results[0].geometry.location;
-      return {
-        lat: location.lat,
-        lng: location.lng,
-        formattedAddress: response.data.results[0].formatted_address
+        
+        // India - 6 digit PIN codes
+        'IN': async () => {
+          if (/^\d{6}$/.test(cleanPincode)) {
+            console.log(`Trying India PIN code format: ${cleanPincode}`);
+            
+            const response = await googleMapsClient.geocode({
+              params: {
+                address: `${cleanPincode} India`,
+                components: 'country:IN',
+                key: process.env.GOOGLE_MAPS_API_KEY
+              }
+            });
+            
+            return response.data.results && response.data.results.length > 0 ? response : null;
+          }
+          return null;
+        }
       };
-    } else {
-      throw new Error('No location found for this pincode');
+      
+      // Try region-specific format if available
+      if (regionFormats[country]) {
+        try {
+          const regionResponse = await regionFormats[country]();
+          if (regionResponse) {
+            attemptResults.push({ method: `region-specific-${country}`, success: true });
+            result = regionResponse;
+          } else {
+            attemptResults.push({ method: `region-specific-${country}`, success: false });
+          }
+        } catch (err) {
+          console.log(`Error with region-specific format for ${country}:`, err.message);
+          attemptResults.push({ method: `region-specific-${country}`, success: false, error: err.message });
+        }
+      }
     }
+    
+    // 2. Try with country component if still no result
+    if (!result && country) {
+      try {
+        console.log(`Trying with country component: ${country}`);
+        const response = await googleMapsClient.geocode({
+          params: {
+            address: cleanPincode,
+            components: `country:${country}`,
+            key: process.env.GOOGLE_MAPS_API_KEY
+          }
+        });
+        
+        if (response.data.results && response.data.results.length > 0) {
+          attemptResults.push({ method: 'country-component', success: true });
+          result = response;
+        } else {
+          attemptResults.push({ method: 'country-component', success: false });
+        }
+      } catch (err) {
+        console.log('Error with country component:', err.message);
+        attemptResults.push({ method: 'country-component', success: false, error: err.message });
+      }
+    }
+    
+    // 3. Try with country name in address if still no result
+    if (!result && country) {
+      try {
+        // Get country name from code (simplified version, could use a more complete mapping)
+        const countryNames = {
+          'US': 'United States',
+          'IN': 'India',
+          'BR': 'Brazil',
+          'MX': 'Mexico',
+          'ZA': 'South Africa',
+          'NG': 'Nigeria',
+          'KE': 'Kenya',
+          'PK': 'Pakistan',
+          'BD': 'Bangladesh',
+          'LK': 'Sri Lanka',
+          'NP': 'Nepal'
+        };
+        
+        const countryName = countryNames[country] || country;
+        console.log(`Trying with country name in address: ${countryName}`);
+        
+        const response = await googleMapsClient.geocode({
+          params: {
+            address: `${cleanPincode} ${countryName}`,
+            key: process.env.GOOGLE_MAPS_API_KEY
+          }
+        });
+        
+        if (response.data.results && response.data.results.length > 0) {
+          attemptResults.push({ method: 'country-name-in-address', success: true });
+          result = response;
+        } else {
+          attemptResults.push({ method: 'country-name-in-address', success: false });
+        }
+      } catch (err) {
+        console.log('Error with country name in address:', err.message);
+        attemptResults.push({ method: 'country-name-in-address', success: false, error: err.message });
+      }
+    }
+    
+    // 4. Try direct postal code search without country (most global)
+    if (!result) {
+      try {
+        console.log('Trying direct postal code search');
+        const response = await googleMapsClient.geocode({
+          params: {
+            address: cleanPincode,
+            key: process.env.GOOGLE_MAPS_API_KEY
+          }
+        });
+        
+        if (response.data.results && response.data.results.length > 0) {
+          attemptResults.push({ method: 'direct-postal-code', success: true });
+          result = response;
+        } else {
+          attemptResults.push({ method: 'direct-postal-code', success: false });
+        }
+      } catch (err) {
+        console.log('Error with direct postal code search:', err.message);
+        attemptResults.push({ method: 'direct-postal-code', success: false, error: err.message });
+      }
+    }
+    
+    // 5. Final attempt with "postal code" prefix
+    if (!result) {
+      try {
+        console.log('Trying with "postal code" prefix');
+        const response = await googleMapsClient.geocode({
+          params: {
+            address: `postal code ${cleanPincode}`,
+            key: process.env.GOOGLE_MAPS_API_KEY
+          }
+        });
+        
+        if (response.data.results && response.data.results.length > 0) {
+          attemptResults.push({ method: 'postal-code-prefix', success: true });
+          result = response;
+        } else {
+          attemptResults.push({ method: 'postal-code-prefix', success: false });
+        }
+      } catch (err) {
+        console.log('Error with postal code prefix:', err.message);
+        attemptResults.push({ method: 'postal-code-prefix', success: false, error: err.message });
+      }
+    }
+    
+    // Log all our attempts for debugging
+    console.log('Geocoding attempts:', JSON.stringify(attemptResults));
+    
+    // Handle no results after all attempts
+    if (!result) {
+      throw new Error(`No location found for postal code "${pincode}" after multiple geocoding attempts`);
+    }
+
+    // Process results
+    const location = result.data.results[0].geometry.location;
+    return {
+      lat: location.lat,
+      lng: location.lng,
+      formattedAddress: result.data.results[0].formatted_address,
+      geocodingMethod: attemptResults.find(a => a.success)?.method || 'unknown'
+    };
   } catch (error) {
-    console.error('Error geocoding pincode:', error);
-    throw new Error(`Failed to geocode pincode: ${error.message}`);
+    console.error('Error geocoding postal code:', error);
+    // Provide more specific error message
+    if (error.response && error.response.data && error.response.data.error_message) {
+      throw new Error(`Geocoding failed: ${error.response.data.error_message}`);
+    }
+    throw new Error(`Failed to geocode postal code: ${error.message}`);
   }
 };
 
