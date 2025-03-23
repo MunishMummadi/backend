@@ -1,6 +1,7 @@
 import twilio from 'twilio';
 import { SmsSubscription } from '../models/index.js';
 import { Op } from 'sequelize';
+import deepSeekService from './deepSeekService.js';
 
 // Initialize Twilio client only if valid credentials exist
 const twilioClient = process.env.TWILIO_ACCOUNT_SID?.startsWith('AC') && process.env.TWILIO_AUTH_TOKEN
@@ -302,7 +303,34 @@ ${providerInfo.website ? `Website: ${providerInfo.website}` : ''}
           };
         }
       } else {
-        // Default response for unrecognized messages
+        // For unrecognized messages, use DeepSeek API to generate a response if available
+        if (deepSeekService.isConfigured()) {
+          try {
+            // Prepare context for the AI with user information if available
+            const context = {};
+            if (subscription) {
+              context.userPreferences = {
+                providerTypes: subscription.providerTypes || [],
+                hasSubscription: true
+              };
+            }
+            
+            // Generate response from DeepSeek API
+            const aiResponse = await deepSeekService.generateResponse(body, context);
+            
+            // Return the AI-generated response
+            return {
+              success: true,
+              message: aiResponse.message,
+              isAiGenerated: true
+            };
+          } catch (aiError) {
+            console.error('Error using DeepSeek API for response generation:', aiError);
+            // Fall back to default response if AI generation fails
+          }
+        }
+        
+        // Default response for unrecognized messages (used if DeepSeek is not configured or fails)
         return {
           success: true,
           message: 'Thank you for your message. Please text HELP for available commands, or visit our website for more information.'

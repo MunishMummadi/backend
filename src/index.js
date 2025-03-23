@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import providerRoutes from './routes/providerRoutes.js';
 import reviewRoutes from './routes/reviewRoutes.js';
 import smsRoutes from './routes/smsRoutes.js';
+import twilioRoutes from './routes/twilioRoutes.js';
 import savedProviderRoutes from './routes/savedProviderRoutes.js';
 import mapRoutes from './routes/mapRoutes.js';
 
@@ -67,6 +68,7 @@ app.use((req, res, next) => {
 app.use('/api/providers', providerRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/sms', smsRoutes);
+app.use('/api/twilio', twilioRoutes);
 app.use('/api/saved', savedProviderRoutes);
 app.use('/api/maps', mapRoutes);
 
