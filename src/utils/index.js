@@ -9,6 +9,10 @@ export * from './errorUtils.js';
 export * from './validationUtils.js';
 export * from './loggerUtils.js';
 export * from './dateUtils.js';
+export * from './googleMapsUtils.js';
+export * from './mapUtils.js';
+export * from './coordinateUtils.js';
+export * from './diagnostics.js';
 
 // Add custom exports or utility compositions here
 

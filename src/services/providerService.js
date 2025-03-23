@@ -1,6 +1,7 @@
 import { Client } from '@googlemaps/google-maps-services-js';
 import { Provider } from '../models/index.js';
 import { Op } from 'sequelize';
+import { checkInsuranceAcceptance, generateRandomInsuranceData } from '../utils/insuranceUtils.js';
 
 // Initialize Google Maps client
 const googleMapsClient = new Client({});
@@ -91,13 +92,23 @@ class ProviderService {
         longitude: provider.geometry.location.lng,
         types: provider.types,
         rating: provider.rating,
-        priceLevel: provider.price_level
+        priceLevel: provider.price_level,
+        // Generate random insurance data for demo purposes
+        insuranceAccepted: generateRandomInsuranceData(Math.floor(Math.random() * 5) + 1)
       }));
 
-      // Save new providers to database for future queries
-      await this.saveProvidersToDatabase(formattedProviders);
+      // Apply insurance filter if specified
+      let filteredProviders = formattedProviders;
+      if (insurance && insurance.length > 0) {
+        filteredProviders = formattedProviders.filter(provider => 
+          checkInsuranceAcceptance(provider, insurance)
+        );
+      }
 
-      return formattedProviders;
+      // Save new providers to database for future queries
+      await this.saveProvidersToDatabase(filteredProviders);
+
+      return filteredProviders;
     } catch (error) {
       console.error('Error finding nearby providers:', error);
       throw error;
@@ -201,6 +212,7 @@ class ProviderService {
         lng: providerData.lng || 0,
         type: providerData.type || 'Healthcare Provider',
         placeId: providerData.placeId || providerData.id,
+        insuranceAccepted: providerData.insuranceAccepted || generateRandomInsuranceData(),
         createdAt: new Date(),
         updatedAt: new Date()
       });
@@ -293,10 +305,14 @@ class ProviderService {
       };
     }
     
-    if (insurance && insurance.trim() !== '') {
-      query.where.insuranceAccepted = {
-        [Op.like]: `%${insurance}%`
-      };
+    if (insurance && Array.isArray(insurance) && insurance.length > 0) {
+      // Use more sophisticated filtering since insurance is stored as JSON in database
+      const results = await Provider.findAll(query);
+      
+      // Filter results manually for insurance since different databases handle JSON filtering differently
+      return results.filter(provider => 
+        checkInsuranceAcceptance(provider, insurance)
+      );
     }
     
     return Provider.findAll(query);

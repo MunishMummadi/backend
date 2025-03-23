@@ -4,9 +4,17 @@ import {
   formatProviderFromGoogleMaps, 
   generateStaticMapUrl,
   getPlaceDetails,
-  geocodePincode
+  geocodePincode,
+  getRouteDirections
 } from '../utils/googleMapsUtils.js';
 import { validateApiKeys, logRequestInfo } from '../utils/diagnostics.js';
+import { 
+  isValidCoordinates, 
+  getSafeCoordinates, 
+  filterValidCoordinates, 
+  createGoogleMapsBounds, 
+  toGoogleMapsLatLng 
+} from '../utils/coordinateUtils.js';
 import providerService from '../services/providerService.js';
 
 // Load environment variables
@@ -21,13 +29,16 @@ class MapController {
   async getMapConfig(req, res) {
     try {
       console.log('Map config endpoint called');
+      // Return Google Maps configuration
+      const defaultCenter = {
+        lat: 37.7749,
+        lng: -122.4194
+      };
       res.json({
-        initialCenter: {
-          lat: 37.7749,
-          lng: -122.4194
-        },
+        initialCenter: defaultCenter,
         apiStatus: 'ok',
-        mapProvider: 'google',
+        mapProvider: 'google', // explicitly specify google
+        googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY, // include API key for frontend
         timestamp: new Date().toISOString()
       });
     } catch (error) {
@@ -42,7 +53,32 @@ class MapController {
       // Log request info for debugging
       console.log('Provider search request:', logRequestInfo(req));
       
-      const { query, lat, lng, pincode, type, specialty, priceRange, radius = 5000, insurance, country = 'IN' } = req.query;
+      const { 
+        query, 
+        lat, 
+        lng, 
+        pincode, 
+        type, 
+        specialty, 
+        priceRange, 
+        radius = 5000, 
+        insurance, 
+        minRating = 0,
+        country = 'IN' 
+      } = req.query;
+      
+      // Process insurance parameters (can be a single string or an array)
+      let insuranceParams = [];
+      if (insurance) {
+        if (Array.isArray(insurance)) {
+          insuranceParams = insurance;
+        } else {
+          // Handle comma-separated values or single value
+          insuranceParams = insurance.includes(',') 
+            ? insurance.split(',').map(item => item.trim()) 
+            : [insurance.trim()];
+        }
+      }
       
       // Check if we have enough parameters to perform search
       if (!query && !lat && !lng && !pincode) {
@@ -64,16 +100,22 @@ class MapController {
         try {
           console.log(`Geocoding pincode: ${pincode}`);
           const geocodeResult = await geocodePincode(pincode, country);
-          latitude = geocodeResult.lat;
-          longitude = geocodeResult.lng;
-          formattedAddress = geocodeResult.formattedAddress;
-          isUserLocation = true;
           
-          console.log(`Pincode ${pincode} geocoded to:`, {
-            lat: latitude,
-            lng: longitude,
-            address: formattedAddress
-          });
+          // Validate geocode results
+          if (isValidCoordinates(geocodeResult)) {
+            latitude = geocodeResult.lat;
+            longitude = geocodeResult.lng;
+            formattedAddress = geocodeResult.formattedAddress;
+            isUserLocation = true;
+            
+            console.log(`Pincode ${pincode} geocoded to:`, {
+              lat: latitude,
+              lng: longitude,
+              address: formattedAddress
+            });
+          } else {
+            throw new Error('Invalid coordinates returned from geocoding');
+          }
         } catch (geocodeError) {
           console.error('Error geocoding pincode:', geocodeError);
           return res.status(400).json({
@@ -83,10 +125,18 @@ class MapController {
           });
         }
       } else if (lat && lng) {
-        // Parse coordinates if lat/lng are provided directly
-        latitude = parseFloat(lat);
-        longitude = parseFloat(lng);
-        isUserLocation = true;
+        // Parse and validate coordinates
+        if (isValidCoordinates({ lat, lng })) {
+          latitude = parseFloat(lat);
+          longitude = parseFloat(lng);
+          isUserLocation = true;
+        } else {
+          return res.status(400).json({
+            error: 'Invalid coordinates provided',
+            providers: [],
+            mapUrl: null
+          });
+        }
       }
       
       console.log('Searching providers with params:', { 
@@ -95,6 +145,8 @@ class MapController {
         radius: parseInt(radius),
         type,
         specialty,
+        insurance: insuranceParams,
+        minRating: parseFloat(minRating),
         isUserLocation
       });
       
@@ -135,7 +187,8 @@ class MapController {
             specialty,
             priceRange,
             radius: parseInt(radius),
-            insurance
+            insurance: insuranceParams,
+            minRating: parseFloat(minRating)
           });
           
           if (dbProviders && dbProviders.length > 0) {
@@ -165,25 +218,32 @@ class MapController {
         }
       }
       
+      // Ensure all providers have valid coordinates
+      providers = filterValidCoordinates(providers);
+      
+      // Convert location to proper Google Maps format
+      const centerLocation = toGoogleMapsLatLng({ lat: latitude, lng: longitude });
+      
       // Generate static map URL with provider markers
       const mapUrl = generateStaticMapUrl(
-        { 
-          lat: latitude, 
-          lng: longitude,
-          isUserLocation
-        },
+        centerLocation,
         providers,
         14,
         600,
         400
       );
       
+      // Create Google Maps bounds for frontend
+      const viewportBounds = createGoogleMapsBounds([centerLocation, ...providers]);
+      
       // Return formatted response with providers and map URL
       res.json({
         providers,
         mapUrl,
-        center: { lat: latitude, lng: longitude },
-        formattedAddress // Include the formatted address if we have it from pincode
+        center: centerLocation,
+        formattedAddress,
+        bounds: viewportBounds,
+        mapProvider: 'google' // explicitly specify google
       });
       
     } catch (error) {
@@ -243,6 +303,99 @@ class MapController {
     } catch (error) {
       console.error('Error in test API endpoint:', error);
       res.status(500).json({ error: 'Failed to test API' });
+    }
+  }
+  
+  /**
+   * Calculate route between two points using the modern Google Routes API
+   * Replaces the legacy Directions API with more features and better performance
+   */
+  async getRoute(req, res) {
+    try {
+      const { 
+        originLat, originLng, originPlaceId,
+        destLat, destLng, destPlaceId,
+        travelMode = 'DRIVE', 
+        alternatives = false,
+        avoidTolls = false, 
+        avoidHighways = false,
+        language = 'en-US'
+      } = req.query;
+      
+      // Validate that we have at least one type of origin and destination
+      if ((!originLat || !originLng) && !originPlaceId) {
+        return res.status(400).json({ error: 'Origin location is required (coordinates or placeId)' });
+      }
+      
+      if ((!destLat || !destLng) && !destPlaceId) {
+        return res.status(400).json({ error: 'Destination location is required (coordinates or placeId)' });
+      }
+      
+      // Prepare origin and destination parameters
+      let origin, destination;
+      
+      // Format origin based on what was provided
+      if (originPlaceId) {
+        origin = originPlaceId;
+      } else {
+        origin = {
+          lat: parseFloat(originLat),
+          lng: parseFloat(originLng)
+        };
+      }
+      
+      // Format destination based on what was provided
+      if (destPlaceId) {
+        destination = destPlaceId;
+      } else {
+        destination = {
+          lat: parseFloat(destLat),
+          lng: parseFloat(destLng)
+        };
+      }
+      
+      // Prepare options
+      const options = {
+        travelMode,
+        alternatives: alternatives === 'true' || alternatives === true,
+        avoidTolls: avoidTolls === 'true' || avoidTolls === true,
+        avoidHighways: avoidHighways === 'true' || avoidHighways === true,
+        language
+      };
+      
+      // Get waypoints if provided
+      if (req.query.waypoints) {
+        try {
+          // Waypoints can be provided as a JSON string of coordinates or placeIds
+          options.waypoints = JSON.parse(req.query.waypoints);
+        } catch (e) {
+          console.warn('Invalid waypoints format, ignoring waypoints:', e.message);
+        }
+      }
+      
+      // Log the route request
+      console.log('Route request:', {
+        origin: originPlaceId || { lat: originLat, lng: originLng },
+        destination: destPlaceId || { lat: destLat, lng: destLng },
+        options
+      });
+      
+      // Get route from Google Routes API
+      const routeData = await getRouteDirections(origin, destination, options);
+      
+      // Return route data to the client
+      res.json({
+        route: routeData,
+        origin: originPlaceId || { lat: originLat, lng: originLng },
+        destination: destPlaceId || { lat: destLat, lng: destLng },
+        options
+      });
+    } catch (error) {
+      console.error('Error calculating route:', error);
+      res.status(500).json({ 
+        error: 'Failed to calculate route',
+        message: error.message 
+      });
     }
   }
 }

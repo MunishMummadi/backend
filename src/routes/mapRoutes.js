@@ -12,4 +12,7 @@ router.get('/providers', mapController.searchProviders);
 // Get provider details
 router.get('/providers/:placeId', mapController.getProviderDetails);
 
+// Calculate route between two points (using modern Routes API)
+router.get('/route', mapController.getRoute);
+
 export default router;

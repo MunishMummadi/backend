@@ -1,5 +1,5 @@
 /**
- * Utility functions for Google Maps API integration
+ * Utility functions for Google Places API integration
  */
 
 import { Client } from '@googlemaps/google-maps-services-js';
@@ -11,15 +11,15 @@ dotenv.config();
 // Initialize Google Maps client
 const googleMapsClient = new Client({});
 
-// Define medical-related place types
+// Define medical-related place types supported by Places API
+// Reference: https://developers.google.com/maps/documentation/places/web-service/supported_types
 const MEDICAL_PLACE_TYPES = [
   'hospital', 
-  'doctor', 
-  'health', 
-  'dentist', 
-  'pharmacy', 
-  'physiotherapist', 
-  'medical_office'
+  'doctor',
+  'pharmacy',
+  'dentist',
+  'physiotherapist',
+  'health'
 ];
 
 /**
@@ -64,7 +64,7 @@ export const geocodePincode = async (pincode, country = 'IN') => {
 };
 
 /**
- * Search for healthcare providers using Google Maps Places API
+ * Search for healthcare providers using Google Places API
  * @param {string} query - Search query for healthcare providers
  * @param {Object} options - Additional search options
  * @returns {Promise<Array>} Array of provider results
@@ -84,107 +84,201 @@ export const searchHealthcareProviders = async (query, options = {}) => {
       ? searchQuery
       : `${searchQuery} healthcare`;
     
-    // If we have coordinates, use Places Nearby Search
+    // If we have coordinates, use Places Nearby Search API
     if (options.lat && options.lng) {
+      // Find which medical place type to use
+      let placeType = null;
+      if (options.type && MEDICAL_PLACE_TYPES.includes(options.type.toLowerCase())) {
+        placeType = options.type.toLowerCase();
+      } else if (searchQuery.toLowerCase().includes('hospital')) {
+        placeType = 'hospital';
+      } else if (searchQuery.toLowerCase().includes('pharmacy')) {
+        placeType = 'pharmacy'; 
+      } else if (searchQuery.toLowerCase().includes('dentist')) {
+        placeType = 'dentist';
+      } else {
+        // Default to healthcare
+        placeType = 'health';
+      }
+      
       const searchParams = {
         location: { lat: parseFloat(options.lat), lng: parseFloat(options.lng) },
         radius: options.radius || 5000,
+        type: placeType,
         keyword: finalKeyword,
         key: process.env.GOOGLE_MAPS_API_KEY
       };
       
-      // Only use valid place types recognized by Google
-      if (options.type && MEDICAL_PLACE_TYPES.includes(options.type.toLowerCase())) {
-        searchParams.type = options.type.toLowerCase();
-      }
-      
-      const response = await googleMapsClient.placesNearby({
-        params: searchParams
+      console.log('Using Places Nearby Search with parameters:', {
+        ...searchParams,
+        key: '[REDACTED]'
       });
       
-      if (response && response.data && response.data.results) {
-        // Filter results for medical locations if no specific type was set
-        let results = response.data.results;
+      try {
+        const response = await googleMapsClient.placesNearby({
+          params: searchParams
+        });
         
-        if (!options.type) {
-          results = results.filter(place => 
-            // Check if any of the place types match our medical types
-            place.types && place.types.some(type => MEDICAL_PLACE_TYPES.includes(type))
-          );
+        if (response && response.data && response.data.results) {
+          return response.data.results.map(place => formatProviderFromGoogleMaps(place));
         }
-        
-        return results.map(place => formatProviderFromGoogleMaps(place));
+      } catch (apiError) {
+        // Check for authorization errors
+        handleApiError(apiError);
+        throw apiError;
       }
     } else {
-      // Otherwise, use Places Text Search
+      // Otherwise, use Places Text Search API
       const searchParams = {
         query: finalKeyword,
         key: process.env.GOOGLE_MAPS_API_KEY
       };
       
-      // Only use valid place types recognized by Google
+      // Only use valid place types recognized by Google Places API
       if (options.type && MEDICAL_PLACE_TYPES.includes(options.type.toLowerCase())) {
         searchParams.type = options.type.toLowerCase();
       }
       
-      const response = await googleMapsClient.textSearch({
-        params: searchParams
+      console.log('Using Places Text Search with parameters:', {
+        ...searchParams,
+        key: '[REDACTED]'
       });
       
-      if (response && response.data && response.data.results) {
-        // Filter results for medical locations if no specific type was set
-        let results = response.data.results;
+      try {
+        const response = await googleMapsClient.textSearch({
+          params: searchParams
+        });
         
-        if (!options.type) {
-          results = results.filter(place => 
-            // Check if any of the place types match our medical types
-            place.types && place.types.some(type => MEDICAL_PLACE_TYPES.includes(type))
-          );
+        if (response && response.data && response.data.results) {
+          return response.data.results.map(place => formatProviderFromGoogleMaps(place));
         }
-        
-        return results.map(place => formatProviderFromGoogleMaps(place));
+      } catch (apiError) {
+        // Check for authorization errors
+        handleApiError(apiError);
+        throw apiError;
       }
     }
     
     return [];
   } catch (error) {
-    console.error('Google Maps search error:', error);
-    throw new Error('Failed to search healthcare providers');
+    console.error('Google Places API search error:', error);
+    throw new Error(`Failed to search healthcare providers: ${error.message}`);
   }
 };
 
 /**
- * Format provider data from Google Maps response to application format
- * @param {Object} place - Google Maps place object
+ * Handle API errors related to authorization and permissions
+ * @param {Error} error - The API error
+ */
+const handleApiError = (error) => {
+  // Check if the error has a response
+  if (error.response) {
+    const { status, data } = error.response;
+    
+    // Log detailed error information
+    console.error('API Error Details:', {
+      status,
+      data,
+      message: error.message
+    });
+    
+    // Handle specific API authorization errors
+    if (status === 403 && data.status === 'REQUEST_DENIED') {
+      console.error(`
+===========================================================
+GOOGLE MAPS API AUTHORIZATION ERROR
+===========================================================
+Your Google Maps API key is not authorized to use the requested API.
+Error: ${data.error_message}
+
+To fix this issue:
+1. Go to Google Cloud Console: https://console.cloud.google.com/
+2. Select your project
+3. Go to "APIs & Services" > "Library"
+4. Search for and enable these APIs:
+   - Places API
+   - Maps JavaScript API
+   - Geocoding API
+   - Directions API
+   - Distance Matrix API
+   - Geolocation API
+   
+5. Make sure billing is enabled for your Google Cloud project
+6. Check API key restrictions to ensure it has access to these APIs
+
+For more information, visit:
+https://developers.google.com/maps/documentation/places/web-service/get-api-key
+===========================================================
+`);
+    }
+    
+    // Handle billing issues
+    if (data.error_message && data.error_message.includes('billing')) {
+      console.error(`
+===========================================================
+GOOGLE MAPS API BILLING ERROR
+===========================================================
+You need to enable billing on your Google Cloud project.
+Visit: https://console.cloud.google.com/project/_/billing/enable
+===========================================================
+`);
+    }
+  }
+};
+
+/**
+ * Format provider data from Google Places API response to application format
+ * @param {Object} place - Google Places API place object
  * @returns {Object} Formatted provider object
  */
 export const formatProviderFromGoogleMaps = (place) => {
   if (!place) return null;
   
+  // Extract address components based on available fields
+  const address = place.vicinity || place.formatted_address || '';
+  
   return {
     id: place.id,
     placeId: place.place_id,
     name: place.name || 'Unknown Provider',
-    address: place.vicinity || place.formatted_address || '',
+    address: address,
     lat: place.geometry.location.lat,
     lng: place.geometry.location.lng,
     type: getProviderType(place.types, place),
-    rating: place.rating || Math.floor(Math.random() * 3) + 3, // Default random rating between 3-5
+    rating: place.rating || Math.floor(Math.random() * 3) + 3, // Default rating between 3-5
     phoneNumber: place.formatted_phone_number || '',
     website: place.website || '',
     openNow: place.opening_hours ? place.opening_hours.open_now : true,
     priceLevel: place.price_level || Math.floor(Math.random() * 3) + 1,
     reviewCount: place.user_ratings_total || Math.floor(Math.random() * 20) + 5,
-    photos: place.photos ? place.photos.map(photo => ({
-      reference: photo.photo_reference,
-      width: photo.width,
-      height: photo.height
-    })) : [],
+    photos: formatPhotos(place.photos),
+    businessStatus: place.business_status || 'OPERATIONAL',
+    // Include if present in the API response
+    formattedAddress: place.formatted_address || address,
+    icon: place.icon || '',
+    iconBackgroundColor: place.icon_background_color || '',
+    iconMaskBaseUri: place.icon_mask_base_uri || ''
   };
 };
 
 /**
- * Generate a static map URL with markers for providers
+ * Format photo data from Google Places API
+ * @param {Array} photos - Google Places API photos array
+ * @returns {Array} Formatted photos array
+ */
+const formatPhotos = (photos) => {
+  if (!photos || !Array.isArray(photos)) return [];
+  
+  return photos.map(photo => ({
+    reference: photo.photo_reference,
+    width: photo.width,
+    height: photo.height,
+    attributions: photo.html_attributions || []
+  }));
+};
+
+/**
+ * Generate a static map URL with markers for providers using Google Maps Static API
  * @param {Object} center - The center coordinates {lat, lng}
  * @param {Array} providers - Array of provider objects with lat/lng properties
  * @param {number} zoom - Zoom level (1-20)
@@ -215,6 +309,10 @@ export const generateStaticMapUrl = (center, providers = [], zoom = 13, width = 
       }
     }
     
+    // Add map style - use a default style appropriate for healthcare
+    url += `&style=feature:poi.medical|element:all|visibility:on|weight:1.5`;
+    url += `&style=feature:poi.business|element:labels|visibility:off`;
+    
     // Add API key
     url += `&key=${process.env.GOOGLE_MAPS_API_KEY}`;
     
@@ -226,8 +324,31 @@ export const generateStaticMapUrl = (center, providers = [], zoom = 13, width = 
 };
 
 /**
- * Determine provider type based on Google Maps place types
- * @param {Array} types - Types from Google Maps
+ * Get a photo URL from a photo reference using Google Places API
+ * @param {string} photoReference - Google Places photo reference
+ * @param {number} maxWidth - Maximum width of the photo
+ * @param {number} maxHeight - Maximum height of the photo (optional)
+ * @returns {string} Photo URL
+ */
+export const getPlacePhotoUrl = (photoReference, maxWidth = 400, maxHeight = null) => {
+  if (!photoReference) return '';
+  
+  let url = `https://maps.googleapis.com/maps/api/place/photo?`;
+  url += `photoreference=${photoReference}`;
+  url += `&maxwidth=${maxWidth}`;
+  
+  if (maxHeight) {
+    url += `&maxheight=${maxHeight}`;
+  }
+  
+  url += `&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+  
+  return url;
+};
+
+/**
+ * Determine provider type based on Google Places API place types
+ * @param {Array} types - Types from Google Places API
  * @param {Object} place - Place object
  * @returns {string} Provider type
  */
@@ -253,8 +374,8 @@ const getProviderType = (types = [], place) => {
 };
 
 /**
- * Get place details using Google Maps Places API
- * @param {string} placeId - Google Maps place ID
+ * Get place details using Google Places API
+ * @param {string} placeId - Google Places place ID
  * @returns {Promise<Object>} Place details
  */
 export const getPlaceDetails = async (placeId) => {
@@ -262,7 +383,23 @@ export const getPlaceDetails = async (placeId) => {
     const response = await googleMapsClient.placeDetails({
       params: {
         place_id: placeId,
-        fields: ['name', 'formatted_address', 'geometry', 'formatted_phone_number', 'website', 'types', 'price_level', 'rating', 'opening_hours', 'photos'],
+        fields: [
+          'name', 
+          'formatted_address', 
+          'geometry', 
+          'formatted_phone_number', 
+          'website', 
+          'types', 
+          'price_level', 
+          'rating', 
+          'opening_hours', 
+          'photos',
+          'business_status',
+          'icon',
+          'icon_background_color',
+          'icon_mask_base_uri',
+          'user_ratings_total'
+        ],
         key: process.env.GOOGLE_MAPS_API_KEY
       }
     });
@@ -276,4 +413,248 @@ export const getPlaceDetails = async (placeId) => {
     console.error('Error getting place details:', error);
     throw new Error('Failed to get place details');
   }
+};
+
+/**
+ * Get route directions between origin and destination using Google Routes API
+ * This replaces the legacy Directions API with the modern Routes API
+ * 
+ * @param {Object} origin - Origin location (lat/lng object or placeId)
+ * @param {Object} destination - Destination location (lat/lng object or placeId)
+ * @param {Object} options - Additional options for route calculation
+ * @returns {Promise<Object>} Route details including waypoints, distance, duration, etc.
+ */
+export const getRouteDirections = async (origin, destination, options = {}) => {
+  try {
+    // Check if we have valid parameters
+    if (!origin || !destination) {
+      throw new Error('Origin and destination are required');
+    }
+    
+    // Format origin and destination based on what was provided
+    let originParam = {};
+    let destinationParam = {};
+    
+    // Format origin
+    if (typeof origin === 'string') {
+      // Assume it's a placeId
+      originParam = { placeId: origin };
+    } else if (origin.lat && origin.lng) {
+      // It's a lat/lng object
+      originParam = { 
+        location: { 
+          latLng: { 
+            latitude: parseFloat(origin.lat), 
+            longitude: parseFloat(origin.lng) 
+          } 
+        } 
+      };
+    } else {
+      throw new Error('Invalid origin format');
+    }
+    
+    // Format destination
+    if (typeof destination === 'string') {
+      // Assume it's a placeId
+      destinationParam = { placeId: destination };
+    } else if (destination.lat && destination.lng) {
+      // It's a lat/lng object
+      destinationParam = { 
+        location: { 
+          latLng: { 
+            latitude: parseFloat(destination.lat), 
+            longitude: parseFloat(destination.lng) 
+          } 
+        } 
+      };
+    } else {
+      throw new Error('Invalid destination format');
+    }
+    
+    // Build request body for Routes API
+    const requestBody = {
+      origin: originParam,
+      destination: destinationParam,
+      travelMode: options.travelMode || 'DRIVE',
+      routingPreference: options.routingPreference || 'TRAFFIC_AWARE',
+      computeAlternativeRoutes: options.alternatives || false,
+      routeModifiers: {
+        avoidTolls: options.avoidTolls || false,
+        avoidHighways: options.avoidHighways || false,
+        avoidFerries: options.avoidFerries || false,
+      },
+      languageCode: options.language || 'en-US',
+      units: options.units || 'METRIC',
+    };
+    
+    // Add waypoints if provided
+    if (options.waypoints && Array.isArray(options.waypoints) && options.waypoints.length > 0) {
+      requestBody.intermediates = options.waypoints.map(waypoint => {
+        if (typeof waypoint === 'string') {
+          return { placeId: waypoint };
+        } else if (waypoint.lat && waypoint.lng) {
+          return { 
+            location: { 
+              latLng: { 
+                latitude: parseFloat(waypoint.lat), 
+                longitude: parseFloat(waypoint.lng) 
+              } 
+            } 
+          };
+        }
+        return null;
+      }).filter(Boolean);
+    }
+    
+    // Add optimization if requested and there are waypoints
+    if (options.optimizeWaypoints && requestBody.intermediates && requestBody.intermediates.length > 0) {
+      requestBody.optimizeWaypointOrder = true;
+    }
+    
+    // Add departure or arrival time if provided
+    if (options.departureTime) {
+      requestBody.departureTime = options.departureTime;
+    } else if (options.arrivalTime) {
+      requestBody.arrivalTime = options.arrivalTime;
+    }
+    
+    console.log('Making Routes API request with parameters:', {
+      ...requestBody,
+      key: '[REDACTED]'
+    });
+    
+    try {
+      // Make API request to Routes API (uses different endpoint/format than other Google Maps APIs)
+      const response = await fetch(
+        `https://routes.googleapis.com/directions/v2:computeRoutes`, 
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': process.env.GOOGLE_MAPS_API_KEY,
+            'X-Goog-FieldMask': [
+              'routes.duration',
+              'routes.distanceMeters',
+              'routes.polyline.encodedPolyline',
+              'routes.legs',
+              'routes.travelAdvisory',
+              'routes.routeLabels'
+            ].join(',')
+          },
+          body: JSON.stringify(requestBody)
+        }
+      );
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        handleApiError({ response: { status: response.status, data: errorData } });
+        throw new Error(`Routes API error: ${response.status} ${JSON.stringify(errorData)}`);
+      }
+      
+      const data = await response.json();
+      
+      // Format and return the route data
+      return formatRouteResponse(data);
+    } catch (fetchError) {
+      console.error('Error fetching route from Routes API:', fetchError);
+      throw new Error(`Failed to get route: ${fetchError.message}`);
+    }
+  } catch (error) {
+    console.error('Error calculating route:', error);
+    throw new Error(`Route calculation failed: ${error.message}`);
+  }
+};
+
+/**
+ * Format the Routes API response into a more usable structure
+ * @param {Object} routesResponse - Raw response from Routes API
+ * @returns {Object} Formatted route information
+ */
+const formatRouteResponse = (routesResponse) => {
+  if (!routesResponse || !routesResponse.routes || routesResponse.routes.length === 0) {
+    return null;
+  }
+  
+  // Get the primary route (first one)
+  const route = routesResponse.routes[0];
+  
+  // Basic route information
+  const formattedRoute = {
+    distance: {
+      meters: route.distanceMeters,
+      text: `${(route.distanceMeters / 1000).toFixed(1)} km`
+    },
+    duration: {
+      seconds: parseInt(route.duration.replace('s', '')),
+      text: formatDuration(parseInt(route.duration.replace('s', '')))
+    },
+    polyline: route.polyline?.encodedPolyline || '',
+    legs: [],
+  };
+  
+  // Process each leg of the journey (between waypoints)
+  if (route.legs && route.legs.length > 0) {
+    formattedRoute.legs = route.legs.map(leg => ({
+      distance: {
+        meters: leg.distanceMeters,
+        text: `${(leg.distanceMeters / 1000).toFixed(1)} km`
+      },
+      duration: {
+        seconds: parseInt(leg.duration.replace('s', '')),
+        text: formatDuration(parseInt(leg.duration.replace('s', '')))
+      },
+      startLocation: leg.startLocation?.latLng,
+      endLocation: leg.endLocation?.latLng,
+      steps: leg.steps || []
+    }));
+  }
+  
+  // Add any travel advisories
+  if (route.travelAdvisory) {
+    formattedRoute.warnings = route.travelAdvisory.warnings || [];
+    formattedRoute.tollInfo = route.travelAdvisory.tollInfo || null;
+    formattedRoute.speedReadingIntervals = route.travelAdvisory.speedReadingIntervals || [];
+  }
+  
+  return {
+    status: 'OK',
+    routes: [formattedRoute],
+    // Include alternative routes if available
+    alternativeRoutes: routesResponse.routes.slice(1).map(altRoute => ({
+      distance: {
+        meters: altRoute.distanceMeters,
+        text: `${(altRoute.distanceMeters / 1000).toFixed(1)} km`
+      },
+      duration: {
+        seconds: parseInt(altRoute.duration.replace('s', '')),
+        text: formatDuration(parseInt(altRoute.duration.replace('s', '')))
+      },
+      polyline: altRoute.polyline?.encodedPolyline || '',
+    }))
+  };
+};
+
+/**
+ * Format duration in seconds to a human-readable string
+ * @param {number} seconds - Duration in seconds
+ * @returns {string} Formatted duration string
+ */
+const formatDuration = (seconds) => {
+  if (seconds < 60) {
+    return `${seconds} sec`;
+  }
+  
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes} min`;
+  }
+  
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  
+  if (remainingMinutes === 0) {
+    return `${hours} hour${hours > 1 ? 's' : ''}`;
+  }
+  
+  return `${hours} hour${hours > 1 ? 's' : ''} ${remainingMinutes} min`;
 };
