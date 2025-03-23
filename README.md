@@ -1,59 +1,48 @@
-# Medical Facility Locator API
+# Healthspot Backend API
 
-A backend service that helps users find medical facilities, get AI-generated feedback, and send information via SMS.
+A backend service that helps users find healthcare providers, read and analyze reviews, and receive provider updates via SMS.
 
 ## Features
 
-- **Google Maps Integration**: Find nearby medical facilities with custom filters (type, specialty, price range)
-- **AI-Powered Feedback**: Generate insights about medical facilities using DeepSeek AI
-- **SMS Notifications**: Send facility information via Twilio SMS
-- **Search History**: Store and retrieve user search history with Supabase
+- **Provider Search**: Find nearby healthcare providers with custom filters
+- **Review Analysis**: Get reviews from Google and synthetic Reddit discussions with sentiment analysis
+- **SMS Notifications**: Subscribe to provider updates via Twilio SMS
+- **Provider Saving**: Allow anonymous users to save their favorite providers
 
 ## Setup
 
 ### Prerequisites
 
 - Node.js 16+ and npm
-- Supabase account
 - Google Maps API key
-- DeepSeek API key
-- Twilio account
+- OpenAI/DeepSeek API key
+- Twilio account (for SMS functionality)
 
 ### Database Setup
 
-In your Supabase project, create the following table:
+The application uses SQLite with Sequelize ORM, which requires minimal setup:
 
-```sql
-CREATE TABLE search_history (
-  id SERIAL PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  search_params JSONB NOT NULL,
-  result_count INTEGER NOT NULL,
-  timestamp TIMESTAMPTZ NOT NULL
-);
-
--- Create index for faster user history retrieval
-CREATE INDEX idx_search_history_user_id ON search_history(user_id);
-```
+1. The database file will be automatically created in the project directory
+2. Models will be automatically synchronized with the database on startup
 
 ### Environment Variables
 
 Create a `.env` file with the following variables:
 
 ```
+# Server Configuration
+PORT=3000
+
 # Google Maps API
 GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+
+# OpenAI/DeepSeek API
+DEEPSEEK_API_KEY=your_deepseek_api_key
 
 # Twilio Configuration
 TWILIO_ACCOUNT_SID=your_twilio_account_sid
 TWILIO_AUTH_TOKEN=your_twilio_auth_token
 TWILIO_PHONE_NUMBER=your_twilio_phone_number
-
-# DeepSeek API
-DEEPSEEK_API_KEY=your_deepseek_api_key
-
-# Supabase
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
 ### Installation
@@ -71,25 +60,55 @@ npm start
 
 ## API Endpoints
 
-### Facilities
+### Providers
 
-- `GET /api/facilities` - Find medical facilities near a location
-  - Query parameters: `lat`, `lng`, `type`, `speciality`, `priceRange`, `userId`
+- `GET /api/providers` - Find healthcare providers near a location
+  - Query parameters: `lat`, `lng`, `type`, `specialty`, `radius`, `insurance`, `anonymousId`
+- `GET /api/providers/:id` - Get detailed information about a provider
 
-### AI Feedback
+### Reviews
 
-- `GET /api/facility/feedback/:facilityName` - Get AI-generated feedback about a facility
+- `GET /api/reviews/google/:providerId` - Get Google reviews for a provider
+- `GET /api/reviews/reddit/:providerId` - Get synthetic Reddit discussions about a provider
+- `GET /api/reviews/analysis/:providerId` - Get AI analysis of provider reviews
 
-### SMS Notifications
+### SMS Subscriptions
 
-- `POST /api/send-sms` - Send facility information via SMS
-  - Body: `{ phoneNumber, facilityInfo }`
+- `POST /api/sms/subscribe` - Subscribe to SMS updates about providers
+  - Body: `{ phoneNumber, preferences, anonymousId }`
+- `POST /api/sms/send` - Send provider information via SMS
+  - Body: `{ phoneNumber, providerInfo }`
+- `GET /api/sms/subscriptions/:anonymousId` - Get subscriptions for an anonymous user
+- `DELETE /api/sms/unsubscribe/:phoneNumber` - Unsubscribe from SMS updates
 
-### Search History
+### Saved Providers
 
-- `GET /api/history/:userId` - Get search history for a user
-- `GET /api/history/:searchId/results` - Get detailed results for a specific historical search
-- `DELETE /api/history/:userId` - Clear search history for a user
+- `POST /api/saved` - Save a provider for an anonymous user
+  - Body: `{ providerId }`
+- `GET /api/saved` - Get saved providers for the current anonymous user
+- `DELETE /api/saved/:providerId` - Remove a provider from saved list
+
+## Models
+
+### Provider
+- Stores healthcare provider information fetched from Google Maps API
+
+### Review
+- Stores reviews for providers from both Google and synthetic Reddit sources
+
+### SmsSubscription
+- Manages user subscriptions for SMS updates about providers
+
+### SavedProvider
+- Tracks providers saved by anonymous users via cookies
+
+## Technology Stack
+
+- **Framework**: Express.js
+- **Database**: SQLite
+- **ORM**: Sequelize
+- **External APIs**: Google Maps, OpenAI/DeepSeek, Twilio
+- **Authentication**: Anonymous tracking via cookies
 
 ## Deployment Options
 
@@ -102,12 +121,6 @@ This application can be deployed to various platforms:
 3. Set the build command: `npm install`
 4. Set the start command: `npm start`
 5. Add environment variables
-
-### Vercel
-
-1. Install Vercel CLI: `npm i -g vercel`
-2. Run `vercel` in the project directory
-3. Add environment variables in the Vercel dashboard
 
 ### Railway
 
